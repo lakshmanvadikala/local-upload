@@ -1,0 +1,45 @@
+$fa-font-path: "~font-awesome/fonts/";
+@import "~bootstrap/dist/css/bootstrap";
+@import "~font-awesome/scss/font-awesome";
+@import "helpers";
+@import "components";
+
+
+body {
+  padding: 20px;
+  padding-bottom: 10px;
+}
+
+.initial {
+  padding-top: 25px;
+
+  h2 {
+    margin-bottom: 20px;
+  }
+
+  p {
+    text-align: justify;
+  }
+}
+
+.settings {
+  label {
+    font-size: 16px;
+  }
+
+  .row {
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  #synchronize-status {
+    @extend .form-control-plaintext;
+  }
+
+  /* The trash button in settings page, next to account email */
+  li a.btn {
+    padding: 0;
+    min-width: 20px;
+    margin-bottom: -4px;
+  }
+}

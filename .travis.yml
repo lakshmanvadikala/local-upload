@@ -1,0 +1,35 @@
+language: node_js
+matrix:
+    include:
+      - os: linux
+        env: DIST=linux
+        node_js:
+        - "12"
+        - "13"
+      - os: windows
+        env: DIST=windows
+        node_js:
+        - "12"
+        - "13"
+      - os: osx
+        env: DIST=mac
+        node_js:
+        - "12"
+        - "13"
+script:
+  - npm run test
+  - npm run postinstall
+  - npm run release-$DIST
+deploy:
+  provider: releases
+  api_key: $GITHUB_TOKEN
+  skip_cleanup: true
+  file_glob: true
+  file:
+    - "dist/odrive_*_amd64.deb"
+    - "dist/odrive_*_amd64.snap"
+    - "dist/OpenDrive.*.AppImage"
+    - "dist/OpenDrive.Setup.*.exe"
+    - "dist/OpenDrive-*.dmg"
+  on:
+    branch: release
