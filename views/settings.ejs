@@ -1,0 +1,84 @@
+<%
+let simplifiedAccounts = [];
+
+for (let account of accounts) {
+  simplifiedAccounts.push({id: account.id, folder: account.folder, permanentlyDeleteSetting: account.permanentlyDeleteSetting});
+}
+%>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>ODrive - Settings</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="logo.png" id="favicon">
+  <script src="/javascript/preload.js"></script>
+  <script src="/javascript/jquery.min.js"></script>
+  <script src="/javascript/tether.min.js"></script><!--not sure it's needed -->
+  <link rel="stylesheet" type="text/css" href="/stylesheets/styles.css">
+  <script src="/javascript/frontend.js"></script>
+  <script src="/javascript/settings.js"></script>
+</head>
+<body class="settings">
+
+<script type="text/javascript">
+accounts = <%- JSON.stringify(simplifiedAccounts) %>;
+</script>
+
+<section>
+  <h4>Account</h4>
+  <%
+  if (accounts.length == 0) { %>
+    <p><a href="/connect">Connect</a> a google drive account to get started! <a class="btn btn-sm btn-info float-sm-right" href="/connect"><i class="fa fa-arrow-right"></i></a></p>
+  <% } else { %>
+    <p><ul class="list-group">
+    <% for (let account of accounts) {%>
+      <li class="list-group-item"><%= account.email %> <a class="btn btn-sm btn-danger pull-right" href="/delete/<%- account.id %>"><i class="fa fa-times"></i></a></li>
+    <%
+    } %>
+  </ul></p>
+    <!--<p><a href="/add">Add</a> another google drive account! <a class="btn btn-sm btn-info float-sm-right" href="/add"><i class="fa fa-plus"></i></a></p>-->
+    <%
+  }
+  %>
+</section>
+
+<hr/>
+
+<section>
+  <h4>Folder location</h4>
+  <p>Choose where on your computer you will store your google drive folder</p>
+
+  <div>
+    <label class="custom-file">
+      <input type="file" id="file" class="custom-file-input" onchange="handleUIChangeFolder(accounts[0])" directory webkitdirectory <% if (accounts.length == 0 || accounts[0].running) {%>disabled<%}%>>
+      <span class="custom-file-control folder" id="filePath"><%- (accounts[0]||{folder:"Choose folder..."}).folder %></span>
+    </label>
+  </div>
+</section>
+
+<hr/>
+
+<section>
+    <div class="custom-control custom-switch">
+      <input type="checkbox" class="custom-control-input" id="customSwitch1" onclick="permanentlyDeleteSetting(accounts[0], this.checked)" <%- (accounts[0]||{}).permanentlyDeleteSetting ? "checked" : ""%>>
+      <label class="custom-control-label" for="customSwitch1">Permanently delete files or folders</label>
+    </div>
+</section>
+
+<hr/>
+
+<section>
+  <div class="row space-between">
+    <span id="synchronize-status"><%- (accounts[0]||{}).running ? "Already synchronized." : ""%></span>
+    <button class="btn btn-primary" id="synchronize-button" onclick="beginSynchronization(accounts[0])" <%- (accounts[0]||{}).running ? "disabled='disabled'" : ""%>><i class="fa fa-download" id="synchronize-icon"></i> <span id="synchronize-text">Synchronize</span></button>
+  </div>
+</section>
+
+<script>
+  <% if (accounts[0] && accounts[0].sync.syncing) {%>
+    UIBeginSyncing();
+  <% } %>
+</script>
+</body>
