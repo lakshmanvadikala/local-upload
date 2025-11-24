@@ -67,8 +67,19 @@ ipc.on('permanently-delete-setting', async (event, { accountId, permanentlyDelet
   }
 });
 
+// In settings.js - update start-sync handler
 ipc.on('start-sync', async (event, {accountId, folder}) => {
-  /* Shortcut to web IPC. Does not use 'event.sender' as it can be closed and reopened */
+  console.log(`Starting sync for account ${accountId} and folder ${folder}`);
+  
+  // Validate folder path
+  if (!folder || path.extname(folder)) {
+    let web = () => gbs.win ? gbs.win.webContents : { send: () => {} };
+    web().send('error', 'Please select a folder directory, not a file.');
+    web().send('sync-enable');
+    return;
+  }
+
+  /* Shortcut to web IPC */
   let web = () => {
     if (gbs.win) {
       return gbs.win.webContents;
@@ -85,10 +96,9 @@ ipc.on('start-sync', async (event, {accountId, folder}) => {
     web().send('sync-end');
   } catch (err) {
     console.error(err);
-
     web().send('error', err.message);
     /* If synchronization didn't go through to the end, we enable the user to do it again */
-    web().send('sync-enable', err.message);
+    web().send('sync-enable');
   }
 });
 

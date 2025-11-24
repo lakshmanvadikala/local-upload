@@ -4,12 +4,41 @@ const fs = require("fs-extra");
 const mkdirp = require("mkdirp-promise");
 const delay = require("delay");
 const deepEqual = require("deep-equal");
-const md5file = require('md5-file/promise');
+const crypto = require('crypto'); // Use built-in crypto instead of md5-file
 const EventEmitter = require('events');
-
+const fetch = require('node-fetch');
 const {log, verbose, debug, error} = require('../modules/logging');
 const LocalWatcher = require('./localwatcher');
 const globals = require('../../config/globals');
+// Add this import at the top of the file
+const FormData = require('form-data');
+// Add these constants at the top of your Sync class or in a config
+const API_CONFIG = {
+  BASE_URL: 'https://your-api-server.com',
+  ENDPOINTS: {
+    UPLOAD: '/upload',
+    UPDATE: '/update', 
+    FOLDER: '/folder'
+  },
+  HEADERS: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-token-here',
+    // Add all your required headers
+  }
+};
+// Promise-based MD5 function using crypto
+const md5file = (filePath) => {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('md5');
+    const stream = fs.createReadStream(filePath);
+    
+    stream.on('error', err => reject(err));
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+};
+
+// Rest of your imports and code...
 
 const fileInfoFields = "id, name, mimeType, md5Checksum, size, modifiedTime, parents, trashed";
 const listFilesFields = `nextPageToken, files(${fileInfoFields})`;
@@ -102,9 +131,23 @@ class Sync extends EventEmitter {
     return this.account.drive;
   }
 
-  get folder() {
-    return this.account.folder;
+  // In sync.js - update folder getter
+get folder() {
+  const folderPath = this.account.folder;
+  console.log("Sync folder path:", folderPath);
+  
+  // Ensure it's a directory path, not a file path
+  if (folderPath && !folderPath.endsWith(path.sep)) {
+    // Check if it's actually a file (has extension)
+    const ext = path.extname(folderPath);
+    if (ext) {
+      console.warn("Selected path appears to be a file, using parent directory");
+      return path.dirname(folderPath);
+    }
   }
+  
+  return folderPath;
+}
 
   /* check if file is in local registry */
   locallyRegistered(path) {
@@ -117,7 +160,23 @@ class Sync extends EventEmitter {
     this.onLocalDrive[Buffer.from(path).toString('base64')] = true;
     this.changesSinceSave += 1;
   }
-
+// Add this method to your Sync class
+getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.txt': 'text/plain',
+    '.zip': 'application/zip'
+    // Add more MIME types as needed
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
+}
   unregisterLocalFile(path) {
     delete this.onLocalDrive[Buffer.from(path).toString('base64')];
     this.changesSinceSave += 1;
@@ -440,7 +499,48 @@ class Sync extends EventEmitter {
 
   async onLocalFileAdded(src) {
     debug("On local file added", src);
+    console.log("🚀 REACHED: onLocalFileAdded - Starting Google Drive upload for:", src);
+ try {
+  console.log("🚀 Calling external API before Google Drive upload for:", src);
 
+  const formData = new FormData();
+
+  // This MUST MATCH the backend requirement
+  formData.append(
+    "resumefiles",
+    fs.createReadStream(src),
+    {
+      filename: path.basename(src),
+      contentType: this.getMimeType(src)
+    }
+  );
+
+  const apiResponse = await fetch(
+    "https://qa.engazewell.com/api/resumes/profileupload?filesCount=1",
+    {
+      method: "POST",
+      headers: {
+        ...formData.getHeaders(),
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2Njc0MTIyMWYzODc1ZjAxZmFjOTgxNTYiLCJpYXQiOjE3NjM5NTk3MTcsImV4cCI6MTc2NDA0NjExNywidHlwZSI6ImFjY2VzcyJ9.C3qQz5sUGM6IkP0uffYKv7eAJ9BB3i0C4eFs3ktspiU"
+      },
+      body: formData
+    }
+  );
+
+  if (!apiResponse.ok) {
+    const errorText = await apiResponse.text();
+    console.error("SERVER RESPONSE:", errorText);
+    throw new Error(`API call failed (${apiResponse.status}): ${apiResponse.statusText}`);
+  }
+
+  const result = await apiResponse.json();
+  console.log("✅ External API response:", result);
+
+} catch (err) {
+  console.error("❌ External API call failed:", err);
+}
+
+    return;
     if (!(await fs.exists(src))) {
       debug("Not present on file system");
       return;
@@ -492,7 +592,8 @@ class Sync extends EventEmitter {
 
   async onLocalFileUpdated(src) {
     debug("onLocalFileUpdated", src);
-
+console.log("🚀 REACHED: onLocalFileUpdated - Starting Google Drive update for:", src);
+  return;
     if (!(await fs.exists(src))) {
       debug("Not present on file system");
       return;
@@ -627,7 +728,8 @@ class Sync extends EventEmitter {
 
   async onLocalDirAdded(src) {
     verbose("onLocalDirAdded", src);
-
+    console.log("🚀 REACHED: onLocalDirAdded - Starting Google Drive folder creation for:", src);
+    return;
     if (src in this.paths) {
       let id = this.paths[src];
       if (id in this.fileInfo && this.isFolder(this.fileInfo[id])) {
@@ -742,26 +844,37 @@ class Sync extends EventEmitter {
     return changes;
   }
 
-  async downloadFolderStructure(folder) {
-    await this.finishLoading();
+// In sync.js - update downloadFolderStructure method
+async downloadFolderStructure(folder) {
+  console.log("Downloading folder structure for folder", folder);
+  await this.finishLoading();
 
-    /* Try avoiding triggering antispam filters on Google's side, given the quantity of data */
-    await delay(110);
+  /* Try avoiding triggering antispam filters on Google's side */
+  await delay(110);
 
-    verbose("Downloading folder structure for ", folder);
-    let files = await this.folderContents(folder);
-
-    let res = [].concat(files);//clone to a different array
-    for (let file of files) {
-      if (file.mimeType.includes("folder")) {
-        res = res.concat(await this.downloadFolderStructure(file.id));
-      }
-      await this.storeFileInfo(file);
-    }
-
-    return res;
+  verbose("Downloading folder structure for", folder);
+  let files = await this.folderContents(folder);
+  
+  // Add null check for files
+  if (!files || !Array.isArray(files)) {
+    console.error("Invalid files response:", files);
+    return [];
   }
 
+  let res = [].concat(files); // clone to a different array
+  
+  for (let file of files) {
+    if (file && file.mimeType && file.mimeType.includes("folder")) {
+      let subFiles = await this.downloadFolderStructure(file.id);
+      res = res.concat(subFiles);
+    }
+    if (file) {
+      await this.storeFileInfo(file);
+    }
+  }
+
+  return res;
+}
   async folderContents(folder) {
     await this.finishLoading();
 
@@ -790,37 +903,38 @@ class Sync extends EventEmitter {
 
     return files;
   }
+// In sync.js - update filesListChunk method
+async filesListChunk(arg) {
+  await this.finishLoading();
 
-  async filesListChunk(arg) {
-    await this.finishLoading();
+  let {pageToken, q} = arg;
 
-    let {pageToken, q} = arg;
+  let getChunk = () => new Promise((resolve, reject) => {
+    q = q || 'trashed = false';
+    let args = {
+      fields: listFilesFields,
+      corpora: "user",
+      spaces: "drive",
+      pageSize: 1000,
+      q
+    };
 
-    let getChunk = () => new Promise((resolve, reject) => {
-      q = q || 'trashed = false';
-      let args = {
-        fields: listFilesFields,
-        corpora: "user",
-        spaces: "drive",
-        pageSize: 1000,
-        q
-      };
-
-      if (pageToken) {
-        args.pageToken = pageToken;
+    if (pageToken) {
+      args.pageToken = pageToken;
+    }
+    
+    debug("Getting files chunk", args);
+    this.drive.files.list(args, (err, result) => {
+      if (err) {
+        return reject(err);
       }
-      debug("Getting files chunk", args);
-      this.drive.files.list(args, (err, result) => {
-        if (err) {
-          return reject(err);
-        }
-
-        resolve(result);
-      });
+      // Ensure we return the data property
+      resolve(result.data);
     });
+  });
 
-    return await this.tryTwice(getChunk);
-  }
+  return await this.tryTwice(getChunk);
+}
 
   async getPaths(fileInfo) {
     if (fileInfo === null) {
@@ -846,16 +960,20 @@ class Sync extends EventEmitter {
     return ret;
   }
 
-  async getParent(src) {
-    let dir = path.dirname(src);
+// In sync.js - update getParent method
+async getParent(src) {
+  let dir = path.dirname(src);
 
-    if (!(dir in this.paths)) {
-      throw new Error("Unkown folder: ", dir);
+  if (!(dir in this.paths)) {
+    // If parent directory not found, check if it's the root folder
+    if (dir === this.folder) {
+      return this.rootId;
     }
-
-    return this.paths[dir];
+    throw new Error(`Unknown folder: ${dir}. Please make sure you select a folder, not a file.`);
   }
 
+  return this.paths[dir];
+}
   /* Rename / move files appropriately to new destinations */
   async changePaths(oldPaths, newPaths) {
     if (oldPaths.length == 0) {

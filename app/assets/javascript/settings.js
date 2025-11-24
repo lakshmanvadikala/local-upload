@@ -24,15 +24,21 @@ function permanentlyDeleteSetting(account, checked) {
 
 /* React to folder change. Only change folder in current window, will send to backend when beginning synchronization */
 // eslint-disable-next-line no-unused-vars
+// In settings.js - update the handleUIChangeFolder function
 function handleUIChangeFolder(account) {
   let files = $("#file").prop("files");
   if (!files || files.length == 0) {
     return;
   }
-
-  let path = files[0].path;
-  $("#filePath").text(path);
-  account.folder = path;
+  
+  // Get the directory path instead of file path
+  let filePath = files[0].path;
+  let folderPath = files[0].webkitRelativePath ? 
+                   path.dirname(path.join(filePath, files[0].webkitRelativePath)) : 
+                   path.dirname(filePath);
+  
+  $("#filePath").text(folderPath);
+  account.folder = folderPath;
 }
 
 // eslint-disable-next-line no-unused-vars
