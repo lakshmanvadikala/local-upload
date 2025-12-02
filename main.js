@@ -1,159 +1,154 @@
-const {app, BrowserWindow, Tray, Menu} = require('electron');
+const {app, BrowserWindow, Tray, Menu, ipcMain} = require('electron');
 const url = require('url');
-const notifier = require('node-notifier');
 const path = require("path");
+const fs = require('fs-extra');
 
 const gbs = require('./config/globals');
 const core = require('./app/core');
-const AutoLaunch = require('auto-launch');
-const os = require('os');
-
-//Actual backend
 const backend = require('./app/backend');
+const AutoLaunch = require('auto-launch');
 
-const autolauncher = new AutoLaunch({name: "ODrive"});
-
-autolauncher.isEnabled().then(
-  val => gbs.autorun = val,
-  err => console.error("Error when checking auto launch", err)
-);
+const autolauncher = new AutoLaunch({name: "EngazeWell Drive"});
 
 const logo = path.join(__dirname, 'public', 'images', 'logo.png');
 const logoGrey = path.join(__dirname, 'public', 'images', 'logo-grey.png');
 const logoSync = path.join(__dirname, 'public', 'images', 'logo-sync.png');
 
 function createWindow () {
-  // Create the browser window.
   gbs.win = new BrowserWindow({
-    width: 650,
-    height: os.platform() === "win32" ? 260 : 250,
+    width: 600,
+    height: 700,
     icon: logo,
     webPreferences: {
-      nodeIntegration: true
+      nodeIntegration: true,
+      contextIsolation: false,
+      enableRemoteModule: true
     },
-    'use-content-size': true
+    resizable: true,
+    show: false
   });
 
-
-  // and load the index.html of the app.
   gbs.win.loadURL(url.format({
     pathname: "odrive.io/",
     protocol: 'http:',
     slashes: true
-  }), {
-    userAgent: 'Chrome'
+  }));
+
+  gbs.win.once('ready-to-show', () => {
+    gbs.win.show();
   });
 
-  // Emitted when the window is closed.
   gbs.win.on('closed', () => {
-    // Dereference the window object, usually you would store windows
-    // in an array if your app supports multi windows, this is the time
-    // when you should delete the corresponding element.
     gbs.win = null;
   });
 }
 
 function generateTrayMenu() {
-  if (!gbs.tray) {
-    return;
-  }
+  if (!gbs.tray) return;
 
   gbs.trayMenu = Menu.buildFromTemplate([
     {
-      label: 'Preferences...',
+      label: 'Open Settings',
       click () {
         if (gbs.win === null) {
           createWindow();
+        } else {
+          gbs.win.show();
         }
       }
     },
     {
       label: 'Launch on startup',
+      type: 'checkbox',
+      checked: gbs.autorun,
       click() {
         if (gbs.autorun) {
-          autolauncher.disable().then(gbs.autorun = false).catch(err => console.error("Error when disabling auto launch", err));
+          autolauncher.disable().then(() => gbs.autorun = false);
         } else {
-          autolauncher.enable().then(gbs.autorun = true).catch(err => console.error("Error when enabling auto launch", err));
+          autolauncher.enable().then(() => gbs.autorun = true);
         }
-      },
-      type: 'checkbox',
-      checked: gbs.autorun
+      }
     },
     {type: 'separator'},
     {
-      label: 'Quit ODrive',
-      click () {process.exit(0);}
+      label: 'Quit',
+      click () { app.quit(); }
     }
   ]);
+  
   gbs.tray.setContextMenu(gbs.trayMenu);
 }
 
 function generateTray() {
   gbs.tray = new Tray(logo);
-
   generateTrayMenu();
 }
 
+function updateTrayIcon() {
+  const accounts = core.accounts();
+  const isSyncing = accounts.length > 0 && accounts[0].syncing;
+  const path = isSyncing ? logoSync : logo;
+  gbs.tray.setImage(path);
+}
+
 async function launch() {
+  autolauncher.isEnabled().then(enabled => {
+    gbs.autorun = enabled;
+  }).catch(err => {
+    console.error("Auto-launch error:", err);
+  });
+
   generateTray();
-
-  gbs.on("updateAutorun", generateTrayMenu);
-
   await backend.launch();
 
-  /* Only display settings on launch if no account already set up */
-  let accounts = await core.accounts();
-  if (accounts.length == 0) {
+  const accounts = await core.accounts();
+  
+  if (accounts.length === 0) {
+    createWindow();
+  } else {
     createWindow();
   }
 
   core.on("notification", (text) => {
-    notifier.notify({
-      title: "ODrive",
-      message: text
-    });
+    if (gbs.tray) {
+      gbs.tray.displayBalloon({
+        title: "EngazeWell Drive",
+        content: text
+      });
+    }
   });
 
-  //In case of connection error before even watching for it
-  updateTrayIcon();
-  gbs.on("connectivity", () => {
-    updateTrayIcon();
-  });
-  gbs.on("syncing", () => {
-    updateTrayIcon();
-  });
+  gbs.on("syncing", updateTrayIcon);
 }
 
-function updateTrayIcon() {
-  console.log("Updating tray icon, connected: ", gbs.connected, "syncing: ", gbs.syncing);
-  let path = gbs.connected ? (gbs.syncing ? logoSync : logo) : logoGrey;
-  gbs.tray.setImage(path);
-}
+ipcMain.handle('select-folder', async () => {
+  const { dialog } = require('electron');
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  });
+  
+  if (!result.canceled) {
+    return result.filePaths[0];
+  }
+  return null;
+});
+
+app.on('browser-window-focus', () => {
+  if (gbs.win) {
+    gbs.win.webContents.send('window-focused');
+  }
+});
 
 app.commandLine.appendSwitch('host-rules', `MAP odrive.io 127.0.0.1:${backend.port}`);
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
 app.on('ready', launch);
 
-// Quit when all windows are closed.
 app.on('window-all-closed', () => {
-  // On macOS it is common for applications and their menu bar
-  // to stay active until the user quits explicitly with Cmd + Q
-  // if (process.platform !== 'darwin') {
-  // app.quit();
-  // }
-  /* To quit, need to quit on the tray icon */
+  // Keep app running in tray
 });
 
 app.on('activate', () => {
-  // On macOS it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
   if (gbs.win === null) {
     createWindow();
   }
 });
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.

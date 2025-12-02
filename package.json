@@ -28,11 +28,13 @@
     "mkdirp-promise": "^5.0.1",
     "morgan": "^1.9.1",
     "nedb-promise": "^2.0.1",
+    "node-fetch": "^2.7.0",
     "node-notifier": "^10.0.1",
     "popper.js": "^1.16.0",
     "sass": "^1.70.0",
     "sass-loader": "^10.5.2",
-    "tether": "^1.4.7"
+    "tether": "^1.4.7",
+    "electron": "^13.0.0"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^6.4.1",

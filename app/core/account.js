@@ -1,13 +1,10 @@
 const path = require('path');
 const os = require('os');
-const google = require('googleapis');
 const EventEmitter = require('events');
-
-const Sync = require('./sync');
+const { net } = require('electron');
 const globals = require('../../config/globals');
-const OAuth2 = google.google.auth.OAuth2;
 
-const toSave = ["email", "about", "tokens", "folder", "saveTime", "permanentlyDeleteSetting"];
+const toSave = ["email", "tokens", "folder", "saveTime", "syncedFiles"];
 
 class Account extends EventEmitter {
   constructor(doc) {
@@ -16,64 +13,186 @@ class Account extends EventEmitter {
       this.load(doc);
       this.previousSaveTime = doc.saveTime || Date.now();
     }
-    this.folder = this.folder || path.join(os.homedir(), "Google Drive");
-    this.oauth = new OAuth2(
-      globals.api,
-      globals.secret,
-      `http://127.0.0.1:${globals.port}/authCallback`
-    );
-    if (this.tokens) {
-      this.onTokensReceived(this.tokens);
+    this.folder = this.folder || path.join(os.homedir(), "EngazeWell Drive");
+    this.syncedFiles = this.syncedFiles || {};
+    
+    this.api = {
+      baseUrl: 'https://qa.engazewell.com/api',
+      token: null,
+      tokenExpiry: null
+    };
+    
+    if (this.tokens && this.tokens.access) {
+      this.api.token = this.tokens.access.token;
+      this.api.tokenExpiry = new Date(this.tokens.access.expires);
     }
-  }
-
-  /* Get url to redirect to in order to authenticate */
-  get authUrl() {
-    console.log("Generating oauth url");
-    return this.oauth.generateAuthUrl({
-      access_type: 'offline',
-      scope: 'https://www.googleapis.com/auth/drive',
-    });
   }
 
   get running() {
     return !!(this.sync && this.sync.running);
   }
 
-  /* Handle response code from authentification for google oauth */
-  handleCode(code) {
-    console.log("Handling authentification code");
-    return new Promise((resolve, reject) => {
-      this.oauth.getToken(code, (err, tokens) => {
-        if (err) {
-          return reject(err);
-        }
-
-        this.onTokensReceived(tokens).then(resolve, reject);
-      });
-    });
+  get syncing() {
+    return this.sync ? this.sync.syncing : false;
   }
 
-  /* Update user info (email, storage etc.) using oauth tokens */
-  updateUserInfo() {
-    console.log("Updating account info");
-    return new Promise((resolve, reject) => {
-      this.drive.about.get({q: "user.me == true", fields: "user"}, (err, about) => {
-        //console.log("User info", about);
+  get authUrl() {
+    return '/auth/login';
+  }
 
-        if (err) {
-          return reject(err);
+  async login(email, password) {
+    console.log("Logging in with credentials");
+    
+    return new Promise((resolve, reject) => {
+      const request = net.request({
+        method: 'POST',
+        protocol: 'https:',
+        hostname: 'qa.engazewell.com',
+        path: '/api/auth/login',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         }
+      });
+      
+      request.on('response', (response) => {
+        let data = '';
+        response.on('data', (chunk) => {
+          data += chunk;
+        });
         
-        this.about = about;
-        this.email = about.data.emailAddress;
-
-        this.save().then(resolve, reject);
+        response.on('end', async () => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`Login failed: ${response.statusCode}`));
+            return;
+          }
+          
+          try {
+            const result = JSON.parse(data);
+            this.tokens = result.tokens;
+            this.email = result.user.emailAddress;
+            this.api.token = result.tokens.access.token;
+            this.api.tokenExpiry = new Date(result.tokens.access.expires);
+            
+            await this.save();
+            resolve(result);
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
+      
+      request.on('error', (error) => {
+        reject(error);
+      });
+      
+      request.write(JSON.stringify({
+        emailAddress: email,
+        password: password
+      }));
+      
+      request.end();
     });
   }
 
-  /* Save the data to database */
+  async ensureToken() {
+    if (!this.api.token || new Date() >= this.api.tokenExpiry - 60000) {
+      console.log("Token expired or about to expire, refreshing...");
+      throw new Error("Token expired. Please login again.");
+    }
+    return this.api.token;
+  }
+
+  async apiRequest(endpoint, options = {}) {
+    try {
+      const token = await this.ensureToken();
+      
+      const defaultHeaders = {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+        ...options.headers
+      };
+
+      const FormData = require('form-data');
+      
+      if (options.body && options.body instanceof FormData) {
+        delete defaultHeaders['Content-Type'];
+        const formHeaders = options.body.getHeaders();
+        Object.assign(defaultHeaders, formHeaders);
+      } else if (!defaultHeaders['Content-Type']) {
+        defaultHeaders['Content-Type'] = 'application/json';
+      }
+
+      return new Promise((resolve, reject) => {
+        const request = net.request({
+          method: options.method || 'GET',
+          protocol: 'https:',
+          hostname: 'qa.engazewell.com',
+          path: `/api${endpoint}`,
+          headers: defaultHeaders
+        });
+        
+        request.on('response', (response) => {
+          let data = '';
+          response.on('data', (chunk) => {
+            data += chunk;
+          });
+          
+          response.on('end', () => {
+            if (response.statusCode === 403 || response.statusCode === 401) {
+              console.log("Token invalid, attempting re-login...");
+              this.api.token = null;
+              reject(new Error("Token expired, please login again"));
+              return;
+            }
+
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+              reject(new Error(`API request failed: ${response.statusCode} ${data}`));
+              return;
+            }
+
+            try {
+              const jsonData = JSON.parse(data);
+              resolve({
+                json: () => Promise.resolve(jsonData),
+                text: () => Promise.resolve(data),
+                status: response.statusCode,
+                ok: response.statusCode >= 200 && response.statusCode < 300
+              });
+            } catch (error) {
+              resolve({
+                json: () => Promise.reject(new Error('Not JSON')),
+                text: () => Promise.resolve(data),
+                status: response.statusCode,
+                ok: response.statusCode >= 200 && response.statusCode < 300
+              });
+            }
+          });
+        });
+        
+        request.on('error', (error) => {
+          reject(error);
+        });
+        
+        if (options.body) {
+          if (options.body instanceof FormData) {
+            options.body.pipe(request);
+          } else {
+            request.write(typeof options.body === 'string' ? options.body : JSON.stringify(options.body));
+            request.end();
+          }
+        } else {
+          request.end();
+        }
+      });
+    } catch (error) {
+      if (error.message.includes("Token expired")) {
+        this.emit('tokenExpired');
+      }
+      throw error;
+    }
+  }
+
   async save() {
     console.log("Saving account to db");
     this.saveTime = Date.now();
@@ -81,7 +200,18 @@ class Account extends EventEmitter {
 
     for (let element of toSave) {
       if (element in this) {
-        doc[element] = this[element];
+        if (element === 'syncedFiles') {
+          const syncedArray = [];
+          for (const [filePath, fileInfo] of Object.entries(this.syncedFiles)) {
+            syncedArray.push({
+              filePath,
+              ...fileInfo
+            });
+          }
+          doc[element] = syncedArray;
+        } else {
+          doc[element] = this[element];
+        }
       }
     }
 
@@ -96,6 +226,26 @@ class Account extends EventEmitter {
     console.log("Saved account!");
   }
 
+  load(doc) {
+    this.document = doc;
+
+    for (let element of toSave) {
+      if (element in doc) {
+        if (element === 'syncedFiles' && Array.isArray(doc[element])) {
+          this.syncedFiles = {};
+          for (const item of doc[element]) {
+            const { filePath, ...fileInfo } = item;
+            this.syncedFiles[filePath] = fileInfo;
+          }
+        } else {
+          this[element] = doc[element];
+        }
+      }
+    }
+
+    this.id = doc._id;
+  }
+
   async erase() {
     console.log("Removing account from db");
     if (this.sync) {
@@ -108,42 +258,28 @@ class Account extends EventEmitter {
     }
   }
 
-  load(doc) {
-    this.document = doc;
-
-    for (let element of toSave) {
-      if (element in doc) {
-        this[element] = doc[element];
-      }
-    }
-
-    this.id = doc._id;
-  }
-
   async finishLoading() {
     if (this.sync) {
       await this.sync.finishLoading();
     }
   }
 
-  onTokensReceived(tokens) {
-    this.tokens = tokens;
-    console.log(tokens);
-
-    this.oauth.setCredentials(tokens);
-    this.drive = google.google.drive({
-      version: 'v3',
-      auth: this.oauth
-    });
-    this.sync = new Sync(this);
-    this.watchChanges(this.sync);
-
-    return this.updateUserInfo();
+  trackSyncedFile(filePath, fileInfo) {
+    this.syncedFiles[filePath] = {
+      id: fileInfo.id || `${path.basename(filePath)}_${Date.now()}`,
+      uploadedAt: Date.now(),
+      fileSize: require('fs-extra').statSync(filePath).size,
+      cv_url: fileInfo.cv_url,
+      transactionId: fileInfo.transactionId
+    };
   }
 
-  watchChanges(syncObject) {
-    syncObject.on('syncing', syncing => globals.updateSyncing(syncing));
-    syncObject.on('filesChanged', (changes) => this.emit("filesChanged", changes));
+  isFileSynced(filePath) {
+    return filePath in this.syncedFiles;
+  }
+
+  getFileInfo(filePath) {
+    return this.syncedFiles[filePath];
   }
 }
 

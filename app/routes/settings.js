@@ -1,105 +1,203 @@
-const os = require('os');
-const Account = require('../core/account');
+const path = require('path');
 const router = require("express").Router();
-const gbs = require('../../config/globals');
 const core = require('../core');
-const ipc = require('electron').ipcMain;
+const gbs = require('../../config/globals');
 
-const baseSize = os.platform() === "win32" ? 330 : 270;
-
-router.get('/settings', async (req, res) => {
-  let accounts = await core.accounts();
-
-  res.render('settings', {accounts});
-
-  /* Hack to set frontend to proper height */
-  gbs.win.setSize(650, baseSize+80*Math.max(accounts.length,0.5));
+// Login page
+router.get('/login', (req, res) => {
+  res.render('login', { error: null });
 });
 
-router.get('/connect', (req, res) => {
-  let account = new Account();
-  res.redirect(account.authUrl);
-});
-
-router.get('/add', (req, res) => {
-  res.send("Multiple accounts not yet supported");
-});
-
-router.get('/delete/:id', async (req, res) => {
-  let account = await core.getAccountById(req.params.id);
-  await core.removeAccount(account);
-
-  res.redirect('/settings');
-});
-
-router.get('/authCallback', async (req, res, next) => {
+// Handle login
+router.post('/login', async (req, res) => {
   try {
-    let code = req.query.code;
-
-    let account = new Account();
-
-    await account.handleCode(code);
-    core.addAccount(account);
-
-    res.redirect("/settings");
-  } catch(err) {
-    next(err);
-  }
-});
-
-ipc.on('permanently-delete-setting', async (event, { accountId, permanentlyDeleteSetting}) => {
-  /* Shortcut to web IPC. Does not use 'event.sender' as it can be closed and reopened */
-  let web = () => {
-    if (gbs.win) {
-      return gbs.win.webContents;
+    const { email, password } = req.body;
+    
+    let accounts = await core.accounts();
+    let account;
+    
+    if (accounts.length === 0) {
+      const Account = require('../core/account');
+      account = new Account();
+      await account.login(email, password);
+      core.addAccount(account);
     } else {
-      return { send: () => { } };
+      account = accounts[0];
+      await account.login(email, password);
     }
-  };
-
-  try {
-    let account = await core.getAccountById(accountId);
-    account.permanentlyDeleteSetting = permanentlyDeleteSetting;
-    await account.save();
-  } catch (err) {
-    console.error(err);
-    web().send('error', err.message);
+    
+    res.redirect('/settings');
+  } catch (error) {
+    console.error("Login error:", error);
+    res.render('login', { error: error.message });
   }
 });
 
-// In settings.js - update start-sync handler
-ipc.on('start-sync', async (event, {accountId, folder}) => {
-  console.log(`Starting sync for account ${accountId} and folder ${folder}`);
-  
-  // Validate folder path
-  if (!folder || path.extname(folder)) {
-    let web = () => gbs.win ? gbs.win.webContents : { send: () => {} };
-    web().send('error', 'Please select a folder directory, not a file.');
-    web().send('sync-enable');
-    return;
-  }
-
-  /* Shortcut to web IPC */
-  let web = () => {
-    if (gbs.win) {
-      return gbs.win.webContents;
-    } else {
-      return { send: () => { } };
-    }
-  };
-  
+// Select folder endpoint
+router.post('/select-folder', async (req, res) => {
   try {
-    let account = await core.getAccountById(accountId);
+    const { folder } = req.body;
+    
+    if (!folder) {
+      return res.status(400).json({ error: 'No folder selected' });
+    }
+    
+    const fs = require('fs-extra');
+    if (!await fs.exists(folder)) {
+      return res.status(400).json({ error: 'Folder does not exist' });
+    }
+    
+    const accounts = await core.accounts();
+    if (accounts.length === 0) {
+      return res.status(400).json({ error: 'No account found. Please login first.' });
+    }
+    
+    const account = accounts[0];
     account.folder = folder;
     await account.save();
-    await account.sync.start(update => web().send("sync-update", {accountId, update}));
-    web().send('sync-end');
-  } catch (err) {
-    console.error(err);
-    web().send('error', err.message);
-    /* If synchronization didn't go through to the end, we enable the user to do it again */
-    web().send('sync-enable');
+    
+    res.json({ success: true, folder });
+  } catch (error) {
+    console.error("Folder selection error:", error);
+    res.status(500).json({ error: error.message });
   }
+});
+
+// Settings page
+router.get('/settings', async (req, res) => {
+  let accounts = await core.accounts();
+  
+  if (accounts.length === 0) {
+    return res.redirect('/login');
+  }
+
+  const account = accounts[0];
+  const fs = require('fs-extra');
+  const hasFolder = account.folder && await fs.exists(account.folder);
+  
+  res.render('settings', {
+    accounts,
+    hasFolder,
+    email: account.email,
+    syncedFilesCount: Object.keys(account.syncedFiles || {}).length,
+    folder: account.folder || 'No folder selected'
+  });
+});
+
+// Start sync endpoint
+router.post('/start-sync', async (req, res) => {
+  try {
+    const accounts = await core.accounts();
+    if (accounts.length === 0) {
+      return res.status(400).json({ error: 'No account found' });
+    }
+    
+    const account = accounts[0];
+    
+    if (!account.folder) {
+      return res.status(400).json({ error: 'Please select a folder first' });
+    }
+    
+    const fs = require('fs-extra');
+    if (!await fs.exists(account.folder)) {
+      return res.status(400).json({ error: 'Selected folder does not exist' });
+    }
+    
+    if (!account.sync) {
+      const Sync = require('../core/sync');
+      account.sync = new Sync(account);
+    }
+    
+    account.sync.start((progress) => {
+      if (gbs.win && gbs.win.webContents) {
+        gbs.win.webContents.send('sync-progress', progress);
+      }
+    }).then(result => {
+      if (gbs.win && gbs.win.webContents) {
+        gbs.win.webContents.send('sync-complete', result);
+      }
+    }).catch(error => {
+      if (gbs.win && gbs.win.webContents) {
+        gbs.win.webContents.send('sync-error', error.message);
+      }
+    });
+    
+    res.json({ success: true, message: 'Sync started' });
+  } catch (error) {
+    console.error("Sync error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check for new files endpoint (for auto-sync)
+router.post('/check-new-files', async (req, res) => {
+  try {
+    const accounts = await core.accounts();
+    if (accounts.length === 0) {
+      return res.json({ hasNewFiles: false });
+    }
+    
+    const account = accounts[0];
+    
+    if (!account.folder || !await require('fs-extra').exists(account.folder)) {
+      return res.json({ hasNewFiles: false });
+    }
+    
+    if (!account.sync) {
+      return res.json({ hasNewFiles: false });
+    }
+    
+    const allFiles = await account.sync.scanFolder(account.folder);
+    const newFilesCount = allFiles.filter(file => !account.isFileSynced(file)).length;
+    
+    if (newFilesCount > 0 && !account.sync.syncing) {
+      account.sync.startAutoSync(allFiles.filter(file => !account.isFileSynced(file)))
+        .then(result => {
+          if (gbs.win && gbs.win.webContents) {
+            gbs.win.webContents.send('auto-sync-complete', result);
+          }
+        })
+        .catch(error => {
+          console.error("Auto-sync error:", error);
+        });
+      
+      return res.json({ hasNewFiles: true, count: newFilesCount });
+    }
+    
+    res.json({ hasNewFiles: false });
+  } catch (error) {
+    console.error("Check new files error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get sync status
+router.get('/sync-status', async (req, res) => {
+  const accounts = await core.accounts();
+  if (accounts.length === 0) {
+    return res.json({ syncing: false, hasAccount: false });
+  }
+  
+  const account = accounts[0];
+  const syncing = account.sync ? account.sync.syncing : false;
+  const progress = account.sync ? account.sync.currentSyncProgress : null;
+  const hasFolder = !!account.folder && await require('fs-extra').exists(account.folder);
+  
+  res.json({
+    syncing,
+    progress,
+    hasFolder,
+    syncedFilesCount: Object.keys(account.syncedFiles || {}).length
+  });
+});
+
+// Logout
+router.get('/logout', async (req, res) => {
+  const accounts = await core.accounts();
+  if (accounts.length > 0) {
+    await core.removeAccount(accounts[0]);
+  }
+  res.redirect('/login');
 });
 
 module.exports = router;
