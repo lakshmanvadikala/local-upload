@@ -1,11 +1,10 @@
 {
-  "name": "odrive",
+  "name": "engazewell-resume-uploader",
   "version": "0.3.0",
-  "description": "Simple google drive client",
+  "description": "EngazeWell Resume Uploader and auto syncer.",
   "main": "main.js",
-  "repository": "https://github.com/liberodark/ODrive.git",
-  "author": "liberodark, coyotte508 <liberodark@gmail.com>",
-  "license": "GPL-3.0",
+  "repository": "https://github.com/lakshmanvadikala/local-upload.git",
+
   "dependencies": {
     "@popperjs/core": "^2.11.6",
     "array-unique": "^0.3.2",
@@ -35,6 +34,7 @@
     "sass-loader": "^10.5.2",
     "tether": "^1.4.7"
   },
+
   "devDependencies": {
     "copy-webpack-plugin": "^6.4.1",
     "css-loader": "^3.4.1",
@@ -49,6 +49,7 @@
     "webpack": "^4.41.5",
     "webpack-cli": "^3.3.10"
   },
+
   "scripts": {
     "lint": "eslint app main.js",
     "test": "npm run lint",
@@ -61,13 +62,43 @@
     "release-windows": "electron-builder --windows",
     "release-mac": "electron-builder --mac"
   },
+
   "build": {
-    "appId": "com.electron.odrive",
-    "productName": "OpenDrive",
+    "appId": "com.electron.engazewell-resume-uploader",
+    "productName": "EngazeWell Resume Uploader",
+
+    "directories": {
+      "output": "dist"
+    },
+
     "files": [
-      "!dist",
-      "!release-builds"
+      "main.js",
+      "app/**/*",
+      "core/**/*",
+      "config/**/*",
+      "public/**/*",
+      "views/**/*",
+      "assets/**/*",
+      "package.json"
     ],
+
+    "extraResources": [
+      "app/backend/**/*",
+      "public/**/*"
+    ],
+
+    "asarUnpack": [
+      "node_modules/nedb*/**",
+      "node_modules/chokidar/**",
+      "node_modules/googleapis/**",
+      "node_modules/node-fetch/**",
+      "node_modules/md5-file/**",
+      "node_modules/fs-extra/**",
+      "node_modules/tether/**",
+      "node_modules/array-unique/**",
+      "node_modules/delay/**"
+    ],
+
     "linux": {
       "category": "Archiving",
       "target": [
@@ -75,16 +106,28 @@
         "snap"
       ]
     },
+
     "snap": {
       "grade": "stable",
       "confinement": "classic",
-      "summary": "This is a Linux GUI client for Google Drive."
+      "summary": "This is a Linux GUI client for EngazeWell Resume Uploader."
     },
+
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
+
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "EngazeWell Resume Uploader",
+      "perMachine": false
+    },
+
     "mac": {
       "target": [
         "dmg"
