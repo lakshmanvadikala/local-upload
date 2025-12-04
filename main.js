@@ -18,6 +18,7 @@ const logo = path.join(__dirname, "public", "images", "logo.png");
 const logoGrey = path.join(__dirname, "public", "images", "logo-grey.png");
 const logoSync = path.join(__dirname, "public", "images", "logo-sync.png");
 
+
 // -------------------------------------------------------------
 // SINGLE INSTANCE LOCK (REQUIRED FOR REOPEN)
 // -------------------------------------------------------------
@@ -35,6 +36,7 @@ if (!gotTheLock) {
   });
 }
 
+
 // -------------------------------------------------------------
 // CREATE MAIN WINDOW
 // -------------------------------------------------------------
@@ -42,15 +44,15 @@ function createWindow() {
   if (gbs.win) return;
 
   gbs.win = new BrowserWindow({
-    width: 600,
-    height: 700,
+    width: 800,
+    height: 750,
     icon: logo,
     webPreferences: {
       nodeIntegration: true,
-      contextIsolation: false,
+      contextIsolation: false
     },
     resizable: true,
-    show: false,
+    show: false
   });
 
   gbs.win.loadURL(`http://127.0.0.1:${backend.port}`);
@@ -59,12 +61,24 @@ function createWindow() {
     gbs.win.show();
   });
 
-  // Close → hide to tray
-  gbs.win.on("close", (e) => {
+  // ------------------------------------------
+  // CLOSE BUTTON BEHAVIOR → QUIT COMPLETELY
+  // ------------------------------------------
+  gbs.win.on("close", async (e) => {
     e.preventDefault();
-    gbs.win.hide();
+    console.log("Window closed → stopping backend...");
+
+    try {
+      await backend.stop();   // Stop Express server
+    } catch (err) {
+      console.error("Error stopping backend:", err);
+    }
+
+    gbs.win = null;
+    app.quit();
   });
 }
+
 
 // -------------------------------------------------------------
 // TRAY MENU
@@ -78,7 +92,7 @@ function generateTrayMenu() {
       click() {
         if (!gbs.win) createWindow();
         else gbs.win.show();
-      },
+      }
     },
     {
       label: "Launch on startup",
@@ -90,7 +104,7 @@ function generateTrayMenu() {
         } else {
           autolauncher.enable().then(() => (gbs.autorun = true));
         }
-      },
+      }
     },
     { type: "separator" },
 
@@ -100,19 +114,20 @@ function generateTrayMenu() {
     {
       label: "Quit",
       click: async () => {
-        console.log("Stopping backend and quitting...");
+        console.log("Tray Quit clicked → stopping backend...");
         try {
-          await backend.stop();   // <--- IMPORTANT
+          await backend.stop();
         } catch (err) {
-          console.error("Error stopping backend:", err);
+          console.error("Backend stop error:", err);
         }
         app.quit();
-      },
-    },
+      }
+    }
   ]);
 
   gbs.tray.setContextMenu(gbs.trayMenu);
 }
+
 
 // -------------------------------------------------------------
 // TRAY ICON & DOUBLE CLICK
@@ -128,36 +143,37 @@ function generateTray() {
   generateTrayMenu();
 }
 
-// Update tray icon based on sync state
+
+// Update tray icon
 function updateTrayIcon() {
   const accounts = core.accounts();
   const isSyncing = accounts.length > 0 && accounts[0].syncing;
   gbs.tray.setImage(isSyncing ? logoSync : logo);
 }
 
+
 // -------------------------------------------------------------
 // LAUNCH APP
 // -------------------------------------------------------------
 async function launch() {
-  autolauncher
-    .isEnabled()
+
+  autolauncher.isEnabled()
     .then((enabled) => (gbs.autorun = enabled))
     .catch((err) => console.error("Auto-launch error:", err));
 
   generateTray();
 
-  // Start backend (server + core)
+  // Start backend Express server
   await backend.launch();
 
-  // Create app window
   createWindow();
 
-  // Notification listener
+  // Notifications
   core.on("notification", (text) => {
     if (gbs.tray) {
       gbs.tray.displayBalloon({
         title: "EngazeWell Drive",
-        content: text,
+        content: text
       });
     }
   });
@@ -165,15 +181,18 @@ async function launch() {
   gbs.on("syncing", updateTrayIcon);
 }
 
+
 // -------------------------------------------------------------
 // IPC
 // -------------------------------------------------------------
 ipcMain.handle("select-folder", async () => {
   const result = await dialog.showOpenDialog({
-    properties: ["openDirectory"],
+    properties: ["openDirectory"]
   });
+
   return result.canceled ? null : result.filePaths[0];
 });
+
 
 // -------------------------------------------------------------
 // APP EVENTS
@@ -184,8 +203,11 @@ app.on("browser-window-focus", () => {
   }
 });
 
-// Do not quit on window close
-app.on("window-all-closed", () => {});
+
+// Quit app fully when all windows are closed
+app.on("window-all-closed", () => {
+  app.quit();
+});
 
 // macOS behavior
 app.on("activate", () => {
