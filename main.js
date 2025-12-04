@@ -1,13 +1,14 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog } = require("electron");
 const path = require("path");
 const AutoLaunch = require("auto-launch");
-const fs = require("fs-extra");
 
 const gbs = require("./config/globals");
 const core = require("./app/core");
 const backend = require("./app/backend");
 
-// Auto-launch
+// -------------------------------
+// AUTO-LAUNCH SETUP
+// -------------------------------
 const autolauncher = new AutoLaunch({
   name: "EngazeWell Drive",
 });
@@ -17,9 +18,9 @@ const logo = path.join(__dirname, "public", "images", "logo.png");
 const logoGrey = path.join(__dirname, "public", "images", "logo-grey.png");
 const logoSync = path.join(__dirname, "public", "images", "logo-sync.png");
 
-// ------------------------------------------------
-// SINGLE INSTANCE LOCK (IMPORTANT FOR REOPENING)
-// ------------------------------------------------
+// -------------------------------------------------------------
+// SINGLE INSTANCE LOCK (REQUIRED FOR REOPEN)
+// -------------------------------------------------------------
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
@@ -34,9 +35,9 @@ if (!gotTheLock) {
   });
 }
 
-// ------------------------------------------------
+// -------------------------------------------------------------
 // CREATE MAIN WINDOW
-// ------------------------------------------------
+// -------------------------------------------------------------
 function createWindow() {
   if (gbs.win) return;
 
@@ -58,16 +59,16 @@ function createWindow() {
     gbs.win.show();
   });
 
-  // close → hide (tray mode)
+  // Close → hide to tray
   gbs.win.on("close", (e) => {
     e.preventDefault();
     gbs.win.hide();
   });
 }
 
-// ------------------------------------------------
+// -------------------------------------------------------------
 // TRAY MENU
-// ------------------------------------------------
+// -------------------------------------------------------------
 function generateTrayMenu() {
   if (!gbs.tray) return;
 
@@ -92,9 +93,19 @@ function generateTrayMenu() {
       },
     },
     { type: "separator" },
+
+    // --------------------------
+    // QUIT + STOP BACKEND
+    // --------------------------
     {
       label: "Quit",
-      click() {
+      click: async () => {
+        console.log("Stopping backend and quitting...");
+        try {
+          await backend.stop();   // <--- IMPORTANT
+        } catch (err) {
+          console.error("Error stopping backend:", err);
+        }
         app.quit();
       },
     },
@@ -103,13 +114,12 @@ function generateTrayMenu() {
   gbs.tray.setContextMenu(gbs.trayMenu);
 }
 
-// ------------------------------------------------
-// TRAY ICON
-// ------------------------------------------------
+// -------------------------------------------------------------
+// TRAY ICON & DOUBLE CLICK
+// -------------------------------------------------------------
 function generateTray() {
   gbs.tray = new Tray(logo);
 
-  // double-click tray icon to open window
   gbs.tray.on("double-click", () => {
     if (!gbs.win) createWindow();
     else gbs.win.show();
@@ -118,30 +128,28 @@ function generateTray() {
   generateTrayMenu();
 }
 
-// Sync icon update
+// Update tray icon based on sync state
 function updateTrayIcon() {
   const accounts = core.accounts();
   const isSyncing = accounts.length > 0 && accounts[0].syncing;
   gbs.tray.setImage(isSyncing ? logoSync : logo);
 }
 
-// ------------------------------------------------
+// -------------------------------------------------------------
 // LAUNCH APP
-// ------------------------------------------------
+// -------------------------------------------------------------
 async function launch() {
   autolauncher
     .isEnabled()
-    .then((enabled) => {
-      gbs.autorun = enabled;
-    })
+    .then((enabled) => (gbs.autorun = enabled))
     .catch((err) => console.error("Auto-launch error:", err));
 
   generateTray();
 
-  // Start backend API server
+  // Start backend (server + core)
   await backend.launch();
 
-  // Always show window on first launch
+  // Create app window
   createWindow();
 
   // Notification listener
@@ -157,9 +165,9 @@ async function launch() {
   gbs.on("syncing", updateTrayIcon);
 }
 
-// ------------------------------------------------
+// -------------------------------------------------------------
 // IPC
-// ------------------------------------------------
+// -------------------------------------------------------------
 ipcMain.handle("select-folder", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory"],
@@ -167,22 +175,22 @@ ipcMain.handle("select-folder", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-// ------------------------------------------------
+// -------------------------------------------------------------
 // APP EVENTS
-// ------------------------------------------------
+// -------------------------------------------------------------
 app.on("browser-window-focus", () => {
   if (gbs.win) {
     gbs.win.webContents.send("window-focused");
   }
 });
 
-// Do not quit app when all windows are closed
+// Do not quit on window close
 app.on("window-all-closed", () => {});
 
-// macOS dock icon click
+// macOS behavior
 app.on("activate", () => {
   if (!gbs.win) createWindow();
 });
 
-// Start the app
+// Start app
 app.whenReady().then(launch);
