@@ -6,9 +6,12 @@ const gbs = require("./config/globals");
 const core = require("./app/core");
 const backend = require("./app/backend");
 
-// -------------------------------
-// AUTO-LAUNCH SETUP
-// -------------------------------
+// -------------------------------------
+// Prevent infinite shutdown loop
+// -------------------------------------
+let shuttingDown = false;
+
+// Auto-launch
 const autolauncher = new AutoLaunch({
   name: "EngazeWell Drive",
 });
@@ -20,7 +23,7 @@ const logoSync = path.join(__dirname, "public", "images", "logo-sync.png");
 
 
 // -------------------------------------------------------------
-// SINGLE INSTANCE LOCK (REQUIRED FOR REOPEN)
+// SINGLE INSTANCE LOCK
 // -------------------------------------------------------------
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -61,21 +64,27 @@ function createWindow() {
     gbs.win.show();
   });
 
-  // ------------------------------------------
-  // CLOSE BUTTON BEHAVIOR → QUIT COMPLETELY
-  // ------------------------------------------
+  // -------------------------------------
+  // FIX: CLOSE BUTTON SHOULD QUIT ONCE
+  // -------------------------------------
   gbs.win.on("close", async (e) => {
-    e.preventDefault();
-    console.log("Window closed → stopping backend...");
+    if (!shuttingDown) {
+      e.preventDefault();
+      shuttingDown = true;   // avoid infinite loop
 
-    try {
-      await backend.stop();   // Stop Express server
-    } catch (err) {
-      console.error("Error stopping backend:", err);
+      console.log("Window closed → stopping backend...");
+
+      try {
+        await backend.stop();  // Stop backend server
+      } catch (err) {
+        console.error("Error stopping backend:", err);
+      }
+
+      gbs.win = null;
+
+      console.log("Quitting app...");
+      app.quit();  // This will NOT trigger loop now
     }
-
-    gbs.win = null;
-    app.quit();
   });
 }
 
@@ -114,12 +123,17 @@ function generateTrayMenu() {
     {
       label: "Quit",
       click: async () => {
-        console.log("Tray Quit clicked → stopping backend...");
-        try {
-          await backend.stop();
-        } catch (err) {
-          console.error("Backend stop error:", err);
+        if (!shuttingDown) {
+          shuttingDown = true;
+
+          console.log("Tray Quit → stopping backend...");
+          try {
+            await backend.stop();
+          } catch (err) {
+            console.error("Backend stop error:", err);
+          }
         }
+
         app.quit();
       }
     }
@@ -130,7 +144,7 @@ function generateTrayMenu() {
 
 
 // -------------------------------------------------------------
-// TRAY ICON & DOUBLE CLICK
+// TRAY ICON & EVENTS
 // -------------------------------------------------------------
 function generateTray() {
   gbs.tray = new Tray(logo);
@@ -144,7 +158,7 @@ function generateTray() {
 }
 
 
-// Update tray icon
+// Update tray icon while syncing
 function updateTrayIcon() {
   const accounts = core.accounts();
   const isSyncing = accounts.length > 0 && accounts[0].syncing;
@@ -153,17 +167,16 @@ function updateTrayIcon() {
 
 
 // -------------------------------------------------------------
-// LAUNCH APP
+// APP LAUNCH
 // -------------------------------------------------------------
 async function launch() {
-
   autolauncher.isEnabled()
     .then((enabled) => (gbs.autorun = enabled))
     .catch((err) => console.error("Auto-launch error:", err));
 
   generateTray();
 
-  // Start backend Express server
+  // Launch backend
   await backend.launch();
 
   createWindow();
@@ -203,16 +216,15 @@ app.on("browser-window-focus", () => {
   }
 });
 
-
-// Quit app fully when all windows are closed
+// Quit fully when all windows closed
 app.on("window-all-closed", () => {
   app.quit();
 });
 
-// macOS behavior
 app.on("activate", () => {
   if (!gbs.win) createWindow();
 });
 
-// Start app
+
+// Start the app
 app.whenReady().then(launch);
