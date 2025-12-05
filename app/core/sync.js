@@ -18,6 +18,7 @@ class Sync extends EventEmitter {
     this.loaded = false;
     this.closed = false;
     this.savedTime = 0;
+
     this.currentSyncProgress = {
       totalFiles: 0,
       processedFiles: 0,
@@ -25,14 +26,15 @@ class Sync extends EventEmitter {
       status: 'idle'
     };
 
+    this._syncing = false;
+
     this.watcher = new LocalWatcher(this);
     this.initWatcher();
-
     this.load();
   }
 
   set syncing(value) {
-    if (this.syncing === value) return;
+    if (this._syncing === value) return;
     this._syncing = value;
     this.currentSyncProgress.status = value ? 'syncing' : 'idle';
     this.emit("syncing", value);
@@ -51,16 +53,19 @@ class Sync extends EventEmitter {
     return "id" in this;
   }
 
+  /* ------------ upload single file ------------ */
+
   async uploadFile(filePath) {
     console.log(`🚀 Uploading file: ${filePath}`);
-    
+
     if (this.account.isFileSynced(filePath)) {
-      console.log(`✅ File already synced: ${filePath}`);
+      console.log(`✅ Already synced: ${filePath}`);
       return { skipped: true, filePath };
     }
 
     if (!await fs.exists(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
+      console.error(`❌ File not found: ${filePath}`);
+      return { success: false, filePath, error: 'File not found' };
     }
 
     const stats = await fs.stat(filePath);
@@ -84,7 +89,7 @@ class Sync extends EventEmitter {
 
     try {
       console.log(`📤 Calling API for: ${path.basename(filePath)}`);
-      
+
       const response = await this.account.apiRequest('/resumes/profileupload?filesCount=1', {
         method: 'POST',
         body: formData
@@ -125,22 +130,24 @@ class Sync extends EventEmitter {
     return mimeTypes[ext] || 'application/octet-stream';
   }
 
+  /* ------------ folder scanning ------------ */
+
   async scanFolder(folderPath) {
     console.log(`📁 Scanning folder: ${folderPath}`);
-    
+
     if (!await fs.exists(folderPath)) {
       throw new Error(`Folder does not exist: ${folderPath}`);
     }
 
     const files = [];
-    
+
     async function scan(dir) {
       const items = await fs.readdir(dir);
-      
+
       for (const item of items) {
         const fullPath = path.join(dir, item);
         const stats = await fs.stat(fullPath);
-        
+
         if (stats.isFile()) {
           files.push(fullPath);
         } else if (stats.isDirectory()) {
@@ -148,10 +155,12 @@ class Sync extends EventEmitter {
         }
       }
     }
-    
+
     await scan(folderPath);
     return files;
   }
+
+  /* ------------ manual sync (Start Sync button) ------------ */
 
   async start(notifyCallback) {
     if (this.syncing) {
@@ -163,23 +172,24 @@ class Sync extends EventEmitter {
 
     try {
       const notify = notifyCallback || ((msg) => console.log(msg));
-      
+
       notify("Scanning folder for files...");
-      
+
       const allFiles = await this.scanFolder(this.folder);
-      console.log(`📊 Found ${allFiles.length} files to process`);
-      
+
+      // ✅ Only NEW files should count for progress
+      const filesToUpload = allFiles.filter(file => !this.account.isFileSynced(file));
+
+      console.log(`📊 Found ${allFiles.length} files total, ${filesToUpload.length} new`);
+
       this.currentSyncProgress = {
-        totalFiles: allFiles.length,
+        totalFiles: filesToUpload.length,
         processedFiles: 0,
         currentFile: null,
         status: 'syncing'
       };
       this.emit("progress", this.currentSyncProgress);
 
-      const filesToUpload = allFiles.filter(file => !this.account.isFileSynced(file));
-      console.log(`📤 ${filesToUpload.length} new files to upload`);
-      
       notify(`Found ${allFiles.length} files, ${filesToUpload.length} new to upload`);
 
       let uploadedCount = 0;
@@ -189,22 +199,29 @@ class Sync extends EventEmitter {
       for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i];
         const result = await this.uploadFile(file);
-        
+
         if (result.skipped) skippedCount++;
         else if (result.success) uploadedCount++;
         else failedCount++;
 
         const processed = uploadedCount + skippedCount + failedCount;
-        notify(`Progress: ${processed}/${filesToUpload.length} files (${uploadedCount} uploaded, ${skippedCount} skipped, ${failedCount} failed)`);
-        
+        notify(
+          `Progress: ${processed}/${filesToUpload.length} files ` +
+          `(${uploadedCount} uploaded, ${skippedCount} skipped, ${failedCount} failed)`
+        );
+
         if (i < filesToUpload.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
 
-      const summary = `✅ Sync completed! Uploaded: ${uploadedCount}, Skipped: ${skippedCount}, Failed: ${failedCount}`;
+      const summary =
+        `✅ Sync completed! Uploaded: ${uploadedCount}, ` +
+        `Skipped: ${skippedCount}, Failed: ${failedCount}`;
+
       notify(summary);
-      
+
+      // start watcher (if not already started)
       try {
         if (this.watcher && this.folder) {
           await this.watcher.startWatching();
@@ -212,11 +229,11 @@ class Sync extends EventEmitter {
       } catch (error) {
         console.error("Error starting file watcher:", error);
       }
-      
+
       this.syncing = false;
       this.currentSyncProgress.status = 'completed';
       this.emit("progress", this.currentSyncProgress);
-      
+
       return { uploadedCount, skippedCount, failedCount, summary };
     } catch (error) {
       console.error("❌ Sync failed:", error);
@@ -227,6 +244,8 @@ class Sync extends EventEmitter {
     }
   }
 
+  /* ------------ used by LocalWatcher for periodic scan ------------ */
+
   async autoSyncNewFiles() {
     if (this.syncing || !this.account.folder) {
       return;
@@ -234,10 +253,10 @@ class Sync extends EventEmitter {
 
     try {
       console.log("🔍 Auto-scanning for new files...");
-      
+
       const allFiles = await this.scanFolder(this.folder);
       const filesToUpload = allFiles.filter(file => !this.account.isFileSynced(file));
-      
+
       if (filesToUpload.length > 0) {
         console.log(`🔄 Auto-sync: Found ${filesToUpload.length} new files`);
         await this.startAutoSync(filesToUpload);
@@ -248,6 +267,11 @@ class Sync extends EventEmitter {
   }
 
   async startAutoSync(filesToUpload) {
+    if (!filesToUpload || filesToUpload.length === 0) {
+      console.log("Auto-sync: nothing to upload");
+      return { uploadedCount: 0, skippedCount: 0, failedCount: 0 };
+    }
+
     this.syncing = true;
     this.currentSyncProgress = {
       totalFiles: filesToUpload.length,
@@ -264,14 +288,16 @@ class Sync extends EventEmitter {
     for (let i = 0; i < filesToUpload.length; i++) {
       const file = filesToUpload[i];
       const result = await this.uploadFile(file);
-      
+
       if (result.skipped) skippedCount++;
       else if (result.success) uploadedCount++;
       else failedCount++;
 
-      this.currentSyncProgress.processedFiles = uploadedCount + skippedCount + failedCount;
+      this.currentSyncProgress.processedFiles =
+        uploadedCount + skippedCount + failedCount;
+      this.currentSyncProgress.currentFile = path.basename(file);
       this.emit("progress", this.currentSyncProgress);
-      
+
       if (i < filesToUpload.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -280,33 +306,40 @@ class Sync extends EventEmitter {
     this.syncing = false;
     this.currentSyncProgress.status = 'completed';
     this.emit("progress", this.currentSyncProgress);
-    
-    console.log(`✅ Auto-sync completed: ${uploadedCount} uploaded, ${skippedCount} skipped, ${failedCount} failed`);
+
+    console.log(
+      `✅ Auto-sync completed: ${uploadedCount} uploaded, ` +
+      `${skippedCount} skipped, ${failedCount} failed`
+    );
+
+    // IMPORTANT: keep property names for front-end
     return { uploadedCount, skippedCount, failedCount };
   }
 
-  fileInfoFromPath(path) {
+  /* ------------ watcher integration ------------ */
+
+  fileInfoFromPath(pathValue) {
     if (!this.paths) {
       this.paths = {};
       return null;
     }
-    
-    if (!(path in this.paths)) {
+
+    if (!(pathValue in this.paths)) {
       return null;
     }
-    
-    let id = this.paths[path];
-    
+
+    let id = this.paths[pathValue];
+
     if (!this.fileInfo || !(id in this.fileInfo)) {
       return null;
     }
-    
+
     return this.fileInfo[id];
   }
 
   async onLocalFileAdded(filePath) {
     console.log(`📝 New file detected: ${filePath}`);
-    
+
     if (this.account.isFileSynced(filePath)) {
       console.log(`✅ File already synced, ignoring: ${filePath}`);
       return;
@@ -325,26 +358,27 @@ class Sync extends EventEmitter {
 
   async onLocalFileUpdated(filePath) {
     console.log(`✏️ File updated: ${filePath}`);
-    
+
     if (this.account.isFileSynced(filePath)) {
-      delete this.account.syncedFiles[filePath];
+      delete this.account.syncedFiles[this.account.normalizePath(filePath)];
     }
     await this.onLocalFileAdded(filePath);
   }
 
   async onLocalFileRemoved(filePath) {
     console.log(`🗑️ File removed: ${filePath}`);
-    
-    if (this.account.isFileSynced(filePath)) {
-      delete this.account.syncedFiles[filePath];
+
+    const normalized = this.account.normalizePath(filePath);
+    if (this.account.syncedFiles && this.account.syncedFiles[normalized]) {
+      delete this.account.syncedFiles[normalized];
       await this.account.save();
     }
   }
 
   initWatcher() {
-    this.watcher.on('add', path => this.queue(() => this.onLocalFileAdded(path)));
-    this.watcher.on('unlink', path => this.queue(() => this.onLocalFileRemoved(path)));
-    this.watcher.on('change', path => this.queue(() => this.onLocalFileUpdated(path)));
+    this.watcher.on('add', pathVal => this.queue(() => this.onLocalFileAdded(pathVal)));
+    this.watcher.on('unlink', pathVal => this.queue(() => this.onLocalFileRemoved(pathVal)));
+    this.watcher.on('change', pathVal => this.queue(() => this.onLocalFileUpdated(pathVal)));
   }
 
   async queue(fn) {

@@ -9,23 +9,33 @@ const toSave = ["email", "tokens", "folder", "saveTime", "syncedFiles"];
 class Account extends EventEmitter {
   constructor(doc) {
     super();
+
     if (doc) {
       this.load(doc);
       this.previousSaveTime = doc.saveTime || Date.now();
     }
-    this.folder = this.folder || path.join(os.homedir(), "EngazeWell Drive");
+
+    this.folder = this.folder || 'Select Target Folder to Upload Resumes';
     this.syncedFiles = this.syncedFiles || {};
-    
+
     this.api = {
       baseUrl: 'https://qa.engazewell.com/api',
       token: null,
       tokenExpiry: null
     };
-    
+
     if (this.tokens && this.tokens.access) {
       this.api.token = this.tokens.access.token;
       this.api.tokenExpiry = new Date(this.tokens.access.expires);
     }
+  }
+
+  /* ---------- helpers ---------- */
+
+  normalizePath(filePath) {
+    if (!filePath) return filePath;
+    // normalize + lowercase so DB + runtime always match
+    return path.resolve(filePath).toLowerCase();
   }
 
   get running() {
@@ -40,9 +50,11 @@ class Account extends EventEmitter {
     return '/auth/login';
   }
 
+  /* ---------- auth & api ---------- */
+
   async login(email, password) {
     console.log("Logging in with credentials");
-    
+
     return new Promise((resolve, reject) => {
       const request = net.request({
         method: 'POST',
@@ -54,26 +66,25 @@ class Account extends EventEmitter {
           'Accept': 'application/json'
         }
       });
-      
+
       request.on('response', (response) => {
         let data = '';
-        response.on('data', (chunk) => {
-          data += chunk;
-        });
-        
+        response.on('data', (chunk) => { data += chunk; });
+
         response.on('end', async () => {
           if (response.statusCode !== 200) {
             reject(new Error(`Login failed: ${response.statusCode}`));
             return;
           }
-          
+
           try {
             const result = JSON.parse(data);
+
             this.tokens = result.tokens;
             this.email = result.user.emailAddress;
             this.api.token = result.tokens.access.token;
             this.api.tokenExpiry = new Date(result.tokens.access.expires);
-            
+
             await this.save();
             resolve(result);
           } catch (error) {
@@ -81,16 +92,14 @@ class Account extends EventEmitter {
           }
         });
       });
-      
-      request.on('error', (error) => {
-        reject(error);
-      });
-      
+
+      request.on('error', (error) => reject(error));
+
       request.write(JSON.stringify({
         emailAddress: email,
         password: password
       }));
-      
+
       request.end();
     });
   }
@@ -106,7 +115,7 @@ class Account extends EventEmitter {
   async apiRequest(endpoint, options = {}) {
     try {
       const token = await this.ensureToken();
-      
+
       const defaultHeaders = {
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
@@ -114,7 +123,7 @@ class Account extends EventEmitter {
       };
 
       const FormData = require('form-data');
-      
+
       if (options.body && options.body instanceof FormData) {
         delete defaultHeaders['Content-Type'];
         const formHeaders = options.body.getHeaders();
@@ -131,15 +140,13 @@ class Account extends EventEmitter {
           path: `/api${endpoint}`,
           headers: defaultHeaders
         });
-        
+
         request.on('response', (response) => {
           let data = '';
-          response.on('data', (chunk) => {
-            data += chunk;
-          });
-          
+          response.on('data', (chunk) => { data += chunk; });
+
           response.on('end', () => {
-            if (response.statusCode === 403 || response.statusCode === 401) {
+            if (response.statusCode === 401 || response.statusCode === 403) {
               console.log("Token invalid, attempting re-login...");
               this.api.token = null;
               reject(new Error("Token expired, please login again"));
@@ -169,16 +176,16 @@ class Account extends EventEmitter {
             }
           });
         });
-        
-        request.on('error', (error) => {
-          reject(error);
-        });
-        
+
+        request.on('error', (error) => reject(error));
+
         if (options.body) {
           if (options.body instanceof FormData) {
             options.body.pipe(request);
           } else {
-            request.write(typeof options.body === 'string' ? options.body : JSON.stringify(options.body));
+            request.write(typeof options.body === 'string'
+              ? options.body
+              : JSON.stringify(options.body));
             request.end();
           }
         } else {
@@ -193,6 +200,8 @@ class Account extends EventEmitter {
     }
   }
 
+  /* ---------- persistence ---------- */
+
   async save() {
     console.log("Saving account to db");
     this.saveTime = Date.now();
@@ -202,10 +211,13 @@ class Account extends EventEmitter {
       if (element in this) {
         if (element === 'syncedFiles') {
           const syncedArray = [];
-          for (const [filePath, fileInfo] of Object.entries(this.syncedFiles)) {
+          for (const [storedKey, fileInfo] of Object.entries(this.syncedFiles)) {
+            // store friendly path for display; keep original if available
+            const filePath = fileInfo.originalPath || storedKey;
+            const { originalPath, ...rest } = fileInfo;
             syncedArray.push({
               filePath,
-              ...fileInfo
+              ...rest
             });
           }
           doc[element] = syncedArray;
@@ -216,7 +228,7 @@ class Account extends EventEmitter {
     }
 
     if (this.document) {
-      await globals.db.update({_id: doc._id}, doc, {});
+      await globals.db.update({ _id: doc._id }, doc, {});
     } else {
       doc.type = "account";
       this.document = await globals.db.insert(doc);
@@ -230,16 +242,34 @@ class Account extends EventEmitter {
     this.document = doc;
 
     for (let element of toSave) {
-      if (element in doc) {
-        if (element === 'syncedFiles' && Array.isArray(doc[element])) {
-          this.syncedFiles = {};
-          for (const item of doc[element]) {
+      if (!(element in doc)) continue;
+
+      if (element === 'syncedFiles') {
+        this.syncedFiles = {};
+
+        // CASE 1: stored as array [{ filePath, ... }]
+        if (Array.isArray(doc.syncedFiles)) {
+          for (const item of doc.syncedFiles) {
             const { filePath, ...fileInfo } = item;
-            this.syncedFiles[filePath] = fileInfo;
+            const key = this.normalizePath(filePath);
+            this.syncedFiles[key] = {
+              ...fileInfo,
+              originalPath: filePath
+            };
           }
-        } else {
-          this[element] = doc[element];
         }
+        // CASE 2: legacy: stored as object map
+        else if (typeof doc.syncedFiles === 'object' && doc.syncedFiles !== null) {
+          for (const [filePath, fileInfo] of Object.entries(doc.syncedFiles)) {
+            const key = this.normalizePath(filePath);
+            this.syncedFiles[key] = {
+              ...fileInfo,
+              originalPath: fileInfo.originalPath || filePath
+            };
+          }
+        }
+      } else {
+        this[element] = doc[element];
       }
     }
 
@@ -254,7 +284,7 @@ class Account extends EventEmitter {
       globals.updateSyncing(false);
     }
     if (this.id) {
-      await globals.db.remove({_id: this.id});
+      await globals.db.remove({ _id: this.id });
     }
   }
 
@@ -264,22 +294,29 @@ class Account extends EventEmitter {
     }
   }
 
+  /* ---------- synced files helpers ---------- */
+
   trackSyncedFile(filePath, fileInfo) {
-    this.syncedFiles[filePath] = {
+    const normalized = this.normalizePath(filePath);
+
+    this.syncedFiles[normalized] = {
       id: fileInfo.id || `${path.basename(filePath)}_${Date.now()}`,
       uploadedAt: Date.now(),
       fileSize: require('fs-extra').statSync(filePath).size,
       cv_url: fileInfo.cv_url,
-      transactionId: fileInfo.transactionId
+      transactionId: fileInfo.transactionId,
+      originalPath: filePath
     };
   }
 
   isFileSynced(filePath) {
-    return filePath in this.syncedFiles;
+    const normalized = this.normalizePath(filePath);
+    return !!(normalized && this.syncedFiles && this.syncedFiles[normalized]);
   }
 
   getFileInfo(filePath) {
-    return this.syncedFiles[filePath];
+    const normalized = this.normalizePath(filePath);
+    return this.syncedFiles ? this.syncedFiles[normalized] : undefined;
   }
 }
 
